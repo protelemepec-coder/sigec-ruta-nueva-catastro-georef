@@ -1,0 +1,20 @@
+# Entorno y credenciales
+.env
+*.env
+*.log
+
+# Python
+__pycache__/
+*.pyc
+
+# Archivos de padrón pesados (>100MB limit de GitHub)
+*padron*.csv
+*.csv.gz
+*.parquet
+*.dump
+
+# IDE y sistema
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
