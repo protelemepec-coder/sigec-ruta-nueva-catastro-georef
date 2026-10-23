@@ -7,12 +7,25 @@ document.addEventListener('DOMContentLoaded', () => {
   const searchInput = document.getElementById('searchInput');
   const cycleSelect = document.getElementById('cycleSelect');
   const colorModeSelect = document.getElementById('colorModeSelect');
+  
+  // Elementos de Inspección y Filtros
   const inspectorPanel = document.getElementById('inspectorPanel');
   const inspectorClose = document.getElementById('inspectorClose');
   const btnIsolateRoute = document.getElementById('btnIsolateRoute');
+  const btnDeselectMza = document.getElementById('btnDeselectMza');
+  const btnCleanFilter = document.getElementById('btnCleanFilter');
   const btnResetView = document.getElementById('btnResetView');
+  const filterStatusBadge = document.getElementById('filterStatusBadge');
+  const filterStatusText = document.getElementById('filterStatusText');
+  const btnRemoveFilterBadge = document.getElementById('btnRemoveFilterBadge');
   
-  // Elementos de inspección
+  // Botones de Navegación y Zoom
+  const btnZoomIn = document.getElementById('btnZoomIn');
+  const btnZoomOut = document.getElementById('btnZoomOut');
+  const btnFitDistrict = document.getElementById('btnFitDistrict');
+  const btnFloatClear = document.getElementById('btnFloatClear');
+  
+  // Ficha de Inspección
   const inspMza = document.getElementById('inspMza');
   const inspRutaBadge = document.getElementById('inspRutaBadge');
   const inspGrupo = document.getElementById('inspGrupo');
@@ -31,13 +44,15 @@ document.addEventListener('DOMContentLoaded', () => {
   let activeCycleFilter = 'all';
   let currentColorMode = 'route'; // 'route', 'cycle', 'density'
   
-  // 1. Inicializar Mapa Leaflet
+  // 1. Inicializar Mapa Leaflet con soporte de zoom
   const map = L.map('map', {
     center: [-31.4201, -64.1888], // Córdoba Capital Centro
     zoom: 13,
     minZoom: 10,
     maxZoom: 19,
-    preferCanvas: true
+    preferCanvas: true,
+    scrollWheelZoom: true,
+    zoomControl: false // Usamos nuestra barra personalizada integrada
   });
   
   // Renderer Canvas ultra-rápido para 18.721 polígonos a 60 FPS
@@ -73,10 +88,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // Capa para destacar la manzana seleccionada
   const highlightLayer = L.geoJSON(null, {
     style: {
-      color: '#ffffff',
+      color: '#0284c7',
       weight: 3.5,
       fillColor: '#38bdf8',
-      fillOpacity: 0.7,
+      fillOpacity: 0.85,
       dashArray: '4, 4'
     }
   }).addTo(map);
@@ -127,14 +142,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const isIsolated = (activeIsolatedRoute !== null);
     const matchesIsolated = (props.r === activeIsolatedRoute);
     
-    // Si hay una ruta aislada, atenuar las demás
+    // Si hay una ruta aislada, atenuar fuertemente las demás
     if (isIsolated && !matchesIsolated) {
       return {
         renderer: canvasRenderer,
-        fillColor: '#1e293b',
-        fillOpacity: 0.08,
-        color: '#334155',
-        weight: 0.5
+        fillColor: '#94a3b8',
+        fillOpacity: 0.05,
+        color: '#cbd5e1',
+        weight: 0.3
       };
     }
     
@@ -142,8 +157,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (activeCycleFilter !== 'all' && props.g !== activeCycleFilter) {
       return {
         renderer: canvasRenderer,
-        fillColor: '#1e293b',
-        fillOpacity: 0.04,
+        fillColor: 'transparent',
+        fillOpacity: 0,
         color: 'transparent',
         weight: 0
       };
@@ -153,7 +168,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return {
       renderer: canvasRenderer,
       fillColor: color,
-      fillOpacity: isIsolated ? 0.85 : 0.68,
+      fillOpacity: isIsolated ? 0.88 : 0.68,
       color: isIsolated ? '#0f172a' : '#334155',
       weight: isIsolated ? 2.2 : 1.0
     };
@@ -162,7 +177,6 @@ document.addEventListener('DOMContentLoaded', () => {
   function loadData(data) {
     allFeatures = data.features;
     
-    // Indexar por manzana y ruta para búsquedas ultrarrápidas
     const uniqueRoutes = new Set();
     const uniqueCycles = new Set();
     let totalSupplies = 0;
@@ -181,14 +195,12 @@ document.addEventListener('DOMContentLoaded', () => {
       totalSupplies += p.s;
     });
     
-    // Actualizar KPIs en el header
     if (kpiMzas) kpiMzas.textContent = allFeatures.length.toLocaleString('es-AR');
     if (kpiRutas) kpiRutas.textContent = uniqueRoutes.size.toLocaleString('es-AR');
     if (kpiSumis) kpiSumis.textContent = totalSupplies.toLocaleString('es-AR');
     
-    // Poblar Selector de Ciclos
     if (cycleSelect) {
-      cycleSelect.innerHTML = '<option value="all">Todos los Ciclos (18.721 mzas)</option>';
+      cycleSelect.innerHTML = '<option value="all">Todos los Ciclos</option>';
       const sortedCycles = Array.from(uniqueCycles).sort((a, b) => parseInt(a) - parseInt(b));
       sortedCycles.forEach(c => {
         const opt = document.createElement('option');
@@ -198,7 +210,6 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
     
-    // Crear capa GeoJSON
     geojsonLayer = L.geoJSON(data, {
       renderer: canvasRenderer,
       style: styleFeature,
@@ -224,7 +235,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }).addTo(map);
     
-    // Ocultar Overlay de Carga con animación
     if (loadingOverlay) {
       loadingOverlay.classList.add('hidden');
     }
@@ -234,11 +244,9 @@ document.addEventListener('DOMContentLoaded', () => {
     currentSelectedFeature = feature;
     const p = feature.properties;
     
-    // Resaltar en highlightLayer
     highlightLayer.clearLayers();
     highlightLayer.addData(feature);
     
-    // Poblar Inspector
     if (inspMza) inspMza.textContent = p.m;
     if (inspRutaBadge) {
       inspRutaBadge.textContent = `Ruta ${p.r}`;
@@ -248,7 +256,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (inspSumis) inspSumis.textContent = `${p.s.toLocaleString('es-AR')} suministros`;
     if (inspFuente) inspFuente.textContent = p.f || 'IDECOR';
     
-    // Calles perimetrales formateadas
     if (inspCalles) {
       inspCalles.innerHTML = '';
       if (p.c && p.c.trim() !== '') {
@@ -264,7 +271,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
     
-    // Alturas de calles
     if (inspAlturas) {
       if (p.a && p.a.trim() !== '') {
         inspAlturas.textContent = p.a.split(';').slice(0, 4).join('; ');
@@ -273,10 +279,85 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
     
-    // Abrir panel lateral
     if (inspectorPanel) {
       inspectorPanel.classList.add('open');
     }
+  }
+
+  // Función Principal: Borrar Selección y Filtros de Manzanas / Rutas
+  function clearAllSelectionsAndFilters() {
+    currentSelectedFeature = null;
+    activeIsolatedRoute = null;
+    activeCycleFilter = 'all';
+    
+    if (cycleSelect) cycleSelect.value = 'all';
+    if (searchInput) searchInput.value = '';
+    
+    highlightLayer.clearLayers();
+    
+    if (inspectorPanel) {
+      inspectorPanel.classList.remove('open');
+    }
+    
+    if (filterStatusBadge) {
+      filterStatusBadge.classList.add('hidden');
+    }
+    
+    if (geojsonLayer) {
+      geojsonLayer.setStyle(styleFeature);
+    }
+  }
+
+  // Aislar Ruta Completa
+  if (btnIsolateRoute) {
+    btnIsolateRoute.addEventListener('click', () => {
+      if (!currentSelectedFeature) return;
+      const targetRoute = currentSelectedFeature.properties.r;
+      activeIsolatedRoute = targetRoute;
+      
+      const routeFeats = featuresByRoute.get(targetRoute) || [];
+      
+      // Mostrar Badge de filtro activo en barra superior
+      if (filterStatusBadge && filterStatusText) {
+        filterStatusText.textContent = `Ruta ${targetRoute} (${routeFeats.length} mzas)`;
+        filterStatusBadge.classList.remove('hidden');
+      }
+      
+      geojsonLayer.setStyle(styleFeature);
+      
+      if (routeFeats.length > 0) {
+        const bounds = L.geoJSON({ type: 'FeatureCollection', features: routeFeats }).getBounds();
+        map.fitBounds(bounds, { padding: [60, 60], maxZoom: 17 });
+      }
+    });
+  }
+
+  // Deseleccionar Manzana / Quitar Filtro en Inspector
+  if (btnDeselectMza) {
+    btnDeselectMza.addEventListener('click', () => {
+      clearAllSelectionsAndFilters();
+    });
+  }
+
+  // Botón Borrar Filtro en Barra Superior
+  if (btnCleanFilter) {
+    btnCleanFilter.addEventListener('click', () => {
+      clearAllSelectionsAndFilters();
+    });
+  }
+
+  // Botón Quitar Filtro en Badge Activo
+  if (btnRemoveFilterBadge) {
+    btnRemoveFilterBadge.addEventListener('click', () => {
+      clearAllSelectionsAndFilters();
+    });
+  }
+
+  // Botón Borrar en Barra Flotante
+  if (btnFloatClear) {
+    btnFloatClear.addEventListener('click', () => {
+      clearAllSelectionsAndFilters();
+    });
   }
 
   // Cerrar Inspector
@@ -287,43 +368,90 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Aislar Ruta Completa
-  if (btnIsolateRoute) {
-    btnIsolateRoute.addEventListener('click', () => {
-      if (!currentSelectedFeature) return;
-      const targetRoute = currentSelectedFeature.properties.r;
-      activeIsolatedRoute = targetRoute;
-      
-      // Actualizar estilo en mapa
-      geojsonLayer.setStyle(styleFeature);
-      
-      // Zoom a todas las manzanas de esta ruta
-      const routeFeats = featuresByRoute.get(targetRoute) || [];
-      if (routeFeats.length > 0) {
-        const bounds = L.geoJSON({ type: 'FeatureCollection', features: routeFeats }).getBounds();
-        map.fitBounds(bounds, { padding: [60, 60], maxZoom: 17 });
+  // Restablecer Vista General
+  if (btnResetView) {
+    btnResetView.addEventListener('click', () => {
+      clearAllSelectionsAndFilters();
+      map.setView([-31.4201, -64.1888], 13);
+    });
+  }
+
+  // Botones de Navegación y Zoom
+  if (btnZoomIn) {
+    btnZoomIn.addEventListener('click', () => {
+      map.zoomIn();
+    });
+  }
+
+  if (btnZoomOut) {
+    btnZoomOut.addEventListener('click', () => {
+      map.zoomOut();
+    });
+  }
+
+  if (btnFitDistrict) {
+    btnFitDistrict.addEventListener('click', () => {
+      if (geojsonLayer) {
+        map.fitBounds(geojsonLayer.getBounds(), { padding: [25, 25] });
+      } else {
+        map.setView([-31.4201, -64.1888], 13);
       }
     });
   }
 
-  // Restablecer Vista
-  if (btnResetView) {
-    btnResetView.addEventListener('click', () => {
-      activeIsolatedRoute = null;
-      activeCycleFilter = 'all';
-      if (cycleSelect) cycleSelect.value = 'all';
-      if (searchInput) searchInput.value = '';
-      highlightLayer.clearLayers();
-      geojsonLayer.setStyle(styleFeature);
-      map.setView([-31.4201, -64.1888], 13);
-    });
+  // Soporte nativo para Ctrl + Scroll del mouse (Zoom In / Out preciso)
+  const mapContainer = document.getElementById('map');
+  if (mapContainer) {
+    mapContainer.addEventListener('wheel', (e) => {
+      if (e.ctrlKey) {
+        e.preventDefault(); // Previene el escalado del navegador web
+        if (e.deltaY < 0) {
+          map.zoomIn(1);
+        } else if (e.deltaY > 0) {
+          map.zoomOut(1);
+        }
+      }
+    }, { passive: false });
   }
+
+  // Atajos de Teclado (+, -, Esc)
+  window.addEventListener('keydown', (e) => {
+    // Si el usuario no está escribiendo en el buscador
+    if (document.activeElement === searchInput) return;
+    
+    if (e.key === 'Escape') {
+      clearAllSelectionsAndFilters();
+    } else if (e.key === '+' || e.key === '=') {
+      map.zoomIn();
+    } else if (e.key === '-' || e.key === '_') {
+      map.zoomOut();
+    }
+  });
+
+  // Clic en área vacía del mapa deselecciona la manzana
+  map.on('click', () => {
+    if (currentSelectedFeature && activeIsolatedRoute === null) {
+      currentSelectedFeature = null;
+      highlightLayer.clearLayers();
+      if (inspectorPanel) inspectorPanel.classList.remove('open');
+    }
+  });
 
   // Filtro por Ciclo
   if (cycleSelect) {
     cycleSelect.addEventListener('change', (e) => {
       activeCycleFilter = e.target.value;
       activeIsolatedRoute = null;
+      
+      if (filterStatusBadge && filterStatusText) {
+        if (activeCycleFilter !== 'all') {
+          filterStatusText.textContent = `Ciclo ${activeCycleFilter}`;
+          filterStatusBadge.classList.remove('hidden');
+        } else {
+          filterStatusBadge.classList.add('hidden');
+        }
+      }
+      
       geojsonLayer.setStyle(styleFeature);
       
       if (activeCycleFilter !== 'all') {
@@ -357,6 +485,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!isNaN(routeNum) && featuresByRoute.has(routeNum)) {
           const routeFeats = featuresByRoute.get(routeNum);
           activeIsolatedRoute = routeNum;
+          
+          if (filterStatusBadge && filterStatusText) {
+            filterStatusText.textContent = `Ruta ${routeNum} (${routeFeats.length} mzas)`;
+            filterStatusBadge.classList.remove('hidden');
+          }
+          
           geojsonLayer.setStyle(styleFeature);
           selectFeature(routeFeats[0]);
           const bounds = L.geoJSON({ type: 'FeatureCollection', features: routeFeats }).getBounds();
@@ -394,7 +528,7 @@ document.addEventListener('DOMContentLoaded', () => {
       loadData(MANZANAS_DATA);
     }, 100);
   } else {
-    if (loadingText) loadingText.textContent = 'Descargando GeoJSON de manzanas (12.8 MB)...';
+    if (loadingText) loadingText.textContent = 'Descargando GeoJSON de manzanas (15.4 MB)...';
     fetch('data/manzanas_rutas_distrito1.geojson')
       .then(res => res.json())
       .then(data => {
