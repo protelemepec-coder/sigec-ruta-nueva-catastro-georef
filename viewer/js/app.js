@@ -45,15 +45,19 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Capas Base
   const baseLayers = {
-    "OpenStreetMap (Predeterminado)": L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    "OpenStreetMap (Voyager - Predeterminado)": L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
       maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors'
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions" target="_blank">CARTO</a>'
     }),
-    "CartoDB Oscuro": L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    "ESRI Calles del Mundo": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19,
+      attribution: 'Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, Intermap, iPC, NRCAN, Esri Japan, METI, Esri China (Hong Kong), Esri (Thailand), TomTom'
+    }),
+    "CartoDB Claro": L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap &copy; CARTO'
     }),
-    "CartoDB Claro": L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    "CartoDB Oscuro": L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap &copy; CARTO'
     }),
@@ -63,7 +67,7 @@ document.addEventListener('DOMContentLoaded', () => {
     })
   };
   
-  baseLayers["OpenStreetMap (Predeterminado)"].addTo(map);
+  baseLayers["OpenStreetMap (Voyager - Predeterminado)"].addTo(map);
   L.control.layers(baseLayers, null, { position: 'bottomright' }).addTo(map);
   
   // Capa para destacar la manzana seleccionada

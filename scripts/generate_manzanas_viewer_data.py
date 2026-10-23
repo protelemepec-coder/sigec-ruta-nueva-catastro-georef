@@ -2,8 +2,8 @@ import os
 import sys
 import time
 import json
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 # Configure QGIS PROJ before geopandas/pyproj
 os.environ['PROJ_DATA'] = r'C:\Program Files\QGIS 4.2.0\share\proj'
@@ -18,7 +18,8 @@ sys.stdout.reconfigure(line_buffering=True, encoding='utf-8')
 
 t0 = time.time()
 print("=" * 80)
-print("EXTRACTOR Y ENSAMBLADOR DE MANZANAS CATASTRALES PINTADAS POR RUTA")
+print("EXTRACTOR Y ENSAMBLADOR DE MANZANAS CATASTRALES PINTADAS POR RUTA (v2)")
+print("Corrección de bloques dispersos/genéricos y optimización topológica")
 print("=" * 80)
 
 # Paths
@@ -39,7 +40,6 @@ print(f"      Maestro: {len(maestro):,} manzanas catastrales.")
 # 2. Cargar Asignación de Rutas Dominantes
 print("[2/5] Extrayendo nueva ruta de lectura por manzana...")
 padron_rutas = pd.read_parquet(padron_path, columns=['mza_wfs_asignada', 'nueva_ruta_lectura'])
-# Calcular ruta dominante por mayoría de votos
 route_per_mza = padron_rutas.groupby('mza_wfs_asignada')['nueva_ruta_lectura'].agg(lambda x: int(x.mode()[0]) if not x.empty else 0).reset_index()
 route_dict = dict(zip(route_per_mza['mza_wfs_asignada'], route_per_mza['nueva_ruta_lectura']))
 
@@ -49,8 +49,8 @@ gdf_idecor = gpd.read_parquet(mzas_geom_path)
 gdf_idecor['geometry'] = gdf_idecor['geometry'].map(lambda g: make_valid(g) if not g.is_valid else g)
 idecor_dict = dict(zip(gdf_idecor['mza_wfs'], gdf_idecor['geometry']))
 
-# 4. Procesar Manzanas Faltantes (periurbanas / nuevos loteos)
-print("[4/5] Sintetizando geometrías para manzanas periurbanas no catalogadas...")
+# 4. Procesar Manzanas Faltantes (periurbanas / nuevos loteos / genéricos)
+print("[4/5] Sintetizando geometrías para manzanas periurbanas sin solapamiento gigante...")
 all_mzas = set(maestro['mza_wfs'])
 missing_mzas = all_mzas - set(idecor_dict.keys())
 print(f"      En IDECOR: {len(all_mzas & set(idecor_dict.keys())):,}")
@@ -61,22 +61,30 @@ if missing_mzas:
     padron_coords = padron_coords.dropna(subset=['latitud', 'longitud'])
     coords_missing = padron_coords[padron_coords['mza_wfs_asignada'].isin(missing_mzas)]
     
-    # Agregar bounds por manzana
-    bounds_df = coords_missing.groupby('mza_wfs_asignada').agg(
-        min_lon=('longitud', 'min'),
-        max_lon=('longitud', 'max'),
-        min_lat=('latitud', 'min'),
-        max_lat=('latitud', 'max'),
-        cnt=('latitud', 'count')
-    ).reset_index()
-    
-    for _, r in bounds_df.iterrows():
-        m_id = r['mza_wfs_asignada']
-        if r['min_lon'] == r['max_lon'] and r['min_lat'] == r['max_lat']:
-            poly = Point(r['min_lon'], r['min_lat']).buffer(0.00035)
+    dispersed_count = 0
+    for m_id, sub in coords_missing.groupby('mza_wfs_asignada'):
+        lons = sub['longitud'].values
+        lats = sub['latitud'].values
+        dx = float(np.ptp(lons))
+        dy = float(np.ptp(lats))
+        
+        # Si los suministros están dispersos a más de 350m o es manzana genérica (000, 999):
+        # NO crear bounding box gigante. Crear buffer individual de 25m alrededor de cada punto.
+        if dx > 0.0035 or dy > 0.0035 or m_id.endswith('-000') or m_id.endswith('-999'):
+            dispersed_count += 1
+            pts = [Point(x, y).buffer(0.00025) for x, y in zip(lons, lats)]
+            poly = unary_union(pts)
+        elif len(lons) == 1:
+            poly = Point(lons[0], lats[0]).buffer(0.00030)
+        elif len(lons) == 2:
+            poly = unary_union([Point(x, y) for x, y in zip(lons, lats)]).convex_hull.buffer(0.00025)
         else:
-            poly = box(r['min_lon'] - 0.00015, r['min_lat'] - 0.00015, r['max_lon'] + 0.00015, r['max_lat'] + 0.00015)
+            pts = [Point(x, y) for x, y in zip(lons, lats)]
+            poly = unary_union(pts).convex_hull.buffer(0.00020)
+            
         idecor_dict[m_id] = make_valid(poly)
+        
+    print(f"      Bloques genéricos dispersos tratados como huellas puntuales (sin cajas gigantes): {dispersed_count:,}")
 
 # 5. Armar Colección GeoJSON Optimizada
 print("[5/5] Ensamblando y optimizando GeoJSON (5 decimales y Douglas-Peucker 3m)...")
@@ -89,7 +97,6 @@ def round_coords(coords, precision=5):
 def geom_to_clean_json(geom):
     if geom is None or geom.is_empty:
         return None
-    # Simplificar ligeramente (0.00003 deg ~ 3 metros) para ultra-fluidez web
     s = geom.simplify(0.00003, preserve_topology=True)
     if s is None or s.is_empty:
         s = geom
@@ -116,7 +123,6 @@ for _, row in maestro.iterrows():
     
     r_id = route_dict.get(m_id, 0)
     
-    # Propiedades concisas para rendimiento máximo
     props = {
         'm': m_id,
         'r': int(r_id),
@@ -137,9 +143,8 @@ geojson_obj = {
     'features': features
 }
 
-print(f"      Polígonos procesados: {len(features):,} (omitidos sin coords: {skipped})")
+print(f"      Polígonos procesados: {len(features):,} (omitidos: {skipped})")
 
-# Exportar GeoJSON minificado
 raw_json_str = json.dumps(geojson_obj, separators=(',', ':'))
 
 # Guardar en visor del repositorio
@@ -152,7 +157,7 @@ with open(out_repo_js, 'w', encoding='utf-8') as f:
     f.write(raw_json_str)
     f.write(';\n')
 
-# Guardar en Downloads para el usuario
+# Guardar en Downloads
 out_dl_geojson = os.path.join(out_dl_dir, 'manzanas_rutas_distrito1.geojson')
 out_dl_js = os.path.join(out_dl_dir, 'manzanas_rutas_data.js')
 with open(out_dl_geojson, 'w', encoding='utf-8') as f:
@@ -164,6 +169,6 @@ with open(out_dl_js, 'w', encoding='utf-8') as f:
 
 size_mb = len(raw_json_str) / (1024 * 1024)
 print(f"      Tamaño archivo: {size_mb:.2f} MB")
-print(f"      Exportado a:\n        - {out_repo_js}\n        - {out_dl_js}")
+print(f"      Exportado exitosamente a repositorio y Descargas.")
 print(f"      Tiempo total de ejecución: {time.time() - t0:.2f} s")
 print("=" * 80)
