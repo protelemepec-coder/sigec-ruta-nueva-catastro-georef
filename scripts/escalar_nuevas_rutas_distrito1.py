@@ -1,44 +1,46 @@
-import os
-import sys
-import time
-import oracledb
-import pandas as pd
-import numpy as np
+import os, sys, time, math, oracledb, pandas as pd, numpy as np
+from collections import defaultdict
 from dotenv import load_dotenv
 
 sys.stdout.reconfigure(encoding='utf-8')
+load_dotenv(r'D:/Proyectos/.env')
+load_dotenv(r'D:\Proyectosntigravity-agents-repository\.env')
 
-# Cargar variables de entorno
-load_dotenv(r"D:\Proyectos\.env")
-load_dotenv(r"D:\Proyectos\antigravity-agents-repository\.env")
-
-lib_dir = os.environ.get("OR_INSTANT_CLIENT", r"C:\app\client\product\19.0.0\client_2\bin")
+lib_dir = os.environ.get('OR_INSTANT_CLIENT', r'C:pp\client\product9.0.0\client_2in')
 try:
     oracledb.init_oracle_client(lib_dir=lib_dir)
 except Exception:
     pass
 
 dsn = oracledb.makedsn(
-    host=os.environ["OR_HOST"],
-    port=int(os.environ.get("OR_PORT", 1521)),
-    service_name=os.environ["OR_SERVICE_NAME"]
+    host=os.environ['OR_HOST'],
+    port=int(os.environ.get('OR_PORT', 1521)),
+    service_name=os.environ['OR_SERVICE_NAME']
 )
-conn = oracledb.connect(user=os.environ["OR_USER"], password=os.environ["OR_PASS"], dsn=dsn)
+conn = oracledb.connect(user=os.environ['OR_USER'], password=os.environ['OR_PASS'], dsn=dsn)
 
-# Parametros de Bin-Packing
 TARGET_CAPACITY = 180
 TOLERANCIA = 20
-MIN_CAPACITY = TARGET_CAPACITY - TOLERANCIA  # 160
-MAX_CAPACITY = TARGET_CAPACITY + TOLERANCIA  # 200
+MIN_CAPACITY = TARGET_CAPACITY - TOLERANCIA
+MAX_CAPACITY = TARGET_CAPACITY + TOLERANCIA
 
-# Grupos regulares cíclicos a escalar (1 al 20)
 GRUPOS_CICLICOS = [str(i) for i in range(1, 21)]
 
-print("=" * 110)
-print("🚀 ESCALAMIENTO DE REASIGNACIÓN CATASTRAL DE RUTAS DE LECTURA - DISTRITO 1 (EPEC)")
-print(f"Grupos a procesar: {len(GRUPOS_CICLICOS)} grupos ({', '.join(GRUPOS_CICLICOS)})")
-print(f"Capacidad objetivo por ruta: {TARGET_CAPACITY} suministros (Rango de tolerancia: [{MIN_CAPACITY}, {MAX_CAPACITY}])")
-print("=" * 110)
+print('=' * 110)
+print('ESCALAMIENTO MASIVO: RUTAS CONEXAS CON MAXIMA COMPARTICION DE CALLES INTERNAS - DISTRITO 1 (EPEC)')
+print('Grupos a procesar:', len(GRUPOS_CICLICOS))
+print('=' * 110)
+
+wfs_path = 'D:/Proyectos/antigravity-agents-repository/data/vm_manzanas_calles_new.parquet'
+print('[*] Cargando capa WFS oficial...')
+df_wfs = pd.read_parquet(wfs_path)
+wfs_dict = df_wfs.groupby('nomenclatura')['nombrecall'].apply(lambda x: set(x.str.upper().str.strip())).to_dict()
+print('[+] Capa WFS indexada con', len(wfs_dict), 'manzanas.')
+
+def dist_m(lat1, lon1, lat2, lon2):
+    dlat = (lat1 - lat2) * 111139.0
+    dlon = (lon1 - lon2) * 111139.0 * math.cos(math.radians(lat1))
+    return math.sqrt(dlat*dlat + dlon*dlon)
 
 all_routes_summary = []
 all_groups_summary = []
@@ -48,41 +50,23 @@ total_t0 = time.time()
 
 for g_str in GRUPOS_CICLICOS:
     g_num = int(g_str)
-    print(f"\n[*] Procesando Grupo de Lectura {g_str}...")
+    print('\n[*] Procesando Grupo de Lectura', g_str, '...')
     t_start = time.time()
 
-    query = f"""
-    SELECT 
-        suministro,
-        distrito,
-        grupo_lectura,
-        ruta_lectura as ruta_actual,
-        orden_lectura as orden_actual,
-        calle,
-        altura,
-        barrio,
-        localidad,
-        datos_adicionales_domicilio,
-        latitud,
-        longitud,
-        dc
-    FROM georef.vw_suministros
-    WHERE distrito = 1 AND grupo_lectura = '{g_str}'
-    """
+    query = 'SELECT suministro, distrito, grupo_lectura, ruta_lectura as ruta_actual, orden_lectura as orden_actual, calle, altura, barrio, localidad, datos_adicionales_domicilio, latitud, longitud, dc FROM georef.vw_suministros WHERE distrito = 1 AND grupo_lectura = ' + repr(g_str)
     df = pd.read_sql(query, conn)
     df.columns = [c.lower() for c in df.columns]
     n_sumi = len(df)
     n_rutas_ant = df['ruta_actual'].nunique()
 
     if n_sumi == 0:
-        print(f"[-] Grupo {g_str} sin suministros. Omitiendo.")
+        print('[-] Grupo', g_str, 'sin suministros. Omitiendo.')
         continue
 
     # 1. Tratamiento Catastral
     df['dc_clean'] = df['dc'].fillna('').astype(str).str.strip()
     has_valid_dc = (df['dc_clean'].str.len() == 16)
 
-    # Descomposición estándar para válidos
     df['dpto'] = np.where(has_valid_dc, df['dc_clean'].str[0:2], '11')
     df['pedania'] = np.where(has_valid_dc, df['dc_clean'].str[2:4], '01')
     df['pueblo'] = np.where(has_valid_dc, df['dc_clean'].str[4:6], '01')
@@ -91,243 +75,268 @@ for g_str in GRUPOS_CICLICOS:
     df['mza'] = np.where(has_valid_dc, df['dc_clean'].str[10:13], '000')
     df['parc'] = np.where(has_valid_dc, df['dc_clean'].str[13:16], '000')
 
-    # Para casos sin DC, armar agrupación territorial por barrio y coordenadas
-    df['mza_13dig'] = np.where(
+    df['mza_wfs'] = df['dpto'] + '-' + df['pedania'] + '-' + df['pueblo'] + '-' + df['circ'] + '-' + df['secc'] + '-' + df['mza']
+    df['mza_id'] = np.where(
         has_valid_dc,
-        df['dc_clean'].str[0:13],
+        df['mza_wfs'],
         'VIRT_' + df['barrio'].fillna('SD').str.slice(0, 10).str.replace(' ', '_') + '_' + (df['latitud'].round(3).astype(str))
     )
+    df['mza_id'] = df['mza_id'].fillna('VIRT_SD_0.0').astype(str)
 
-    df['mza_wfs'] = df['dpto'] + '-' + df['pedania'] + '-' + df['pueblo'] + '-' + df['circ'] + '-' + df['secc'] + '-' + df['mza']
-    df['id_suministro_catastral'] = f'1-{g_str}-' + df['mza_wfs'] + '-' + df['parc']
+    # 2. Calles Combinadas WFS + SIGEC
+    sigec_streets = df.groupby('mza_id')['calle'].apply(lambda x: set(x.dropna().str.upper().str.strip())).to_dict()
+    mza_streets = {}
+    for m in df['mza_id'].unique():
+        s = set()
+        if m in wfs_dict:
+            s.update(wfs_dict[m])
+        if m in sigec_streets:
+            s.update(sigec_streets[m])
+        s = {st for st in s if len(st) > 2 and st not in {'CALLE PUBLICA', 'S/N', 'SIN NOMBRE', 'S/D'}}
+        mza_streets[m] = s
 
-    # 2. Agrupación a nivel Manzana Atómica
-    mza_stats = df.groupby('mza_13dig').agg(
-        cant_suministros=('suministro', 'count'),
-        lat_mza=('latitud', 'mean'),
-        lon_mza=('longitud', 'mean'),
+    # 3. Estadisticas por Manzana
+    global_lat_mean = df['latitud'].mean()
+    global_lon_mean = df['longitud'].mean()
+    mza_stats = df.groupby('mza_id', dropna=False).agg(
+        cant_sumi=('suministro', 'count'),
+        lat=('latitud', 'mean'),
+        lon=('longitud', 'mean'),
         barrio=('barrio', lambda x: x.mode().iloc[0] if not x.mode().empty else 'S/D'),
         localidad=('localidad', lambda x: x.mode().iloc[0] if not x.mode().empty else 'S/D'),
         circ=('circ', 'first'),
-        secc=('secc', 'first'),
-        mza_wfs=('mza_wfs', 'first'),
-        rutas_actuales=('ruta_actual', lambda x: list(x.unique()))
+        secc=('secc', 'first')
     ).reset_index()
 
-    global_lat_mean = df['latitud'].mean()
-    global_lon_mean = df['longitud'].mean()
-    mza_stats['lat_fill'] = mza_stats['lat_mza'].fillna(global_lat_mean)
-    mza_stats['lon_fill'] = mza_stats['lon_mza'].fillna(global_lon_mean)
+    mza_stats['lat'] = mza_stats['lat'].fillna(global_lat_mean)
+    mza_stats['lon'] = mza_stats['lon'].fillna(global_lon_mean)
+    mza_stats['calles'] = mza_stats['mza_id'].map(mza_streets)
 
-    # Ordenamiento espacial continuo (Spatial Sweep)
-    mza_stats = mza_stats.sort_values(by=['circ', 'secc', 'lat_fill', 'lon_fill']).reset_index(drop=True)
+    mza_info = {}
+    for _, r in mza_stats.iterrows():
+        mza_info[r['mza_id']] = {
+            'id': r['mza_id'],
+            'cant': r['cant_sumi'],
+            'lat': r['lat'],
+            'lon': r['lon'],
+            'calles': r['calles'],
+            'barrio': r['barrio']
+        }
 
-    # 3. Bin-Packing Espacial
-    rutas_asignadas = []
+    # 4. Agrupamiento Conexo
+    unassigned = set(mza_info.keys())
+    rutas = []
+    route_seq = g_num * 1000 + 1
+
     mza_to_route = {}
     mza_to_subdiv = {}
 
-    route_id_seq = g_num * 1000 + 1  # Ejemplo: G1 -> 1001, G16 -> 16001, G20 -> 20001
-    current_route_id = route_id_seq
-    current_sumi_count = 0
-    current_mzas = []
+    macro_mzas = [m for m in unassigned if mza_info[m]['cant'] > MAX_CAPACITY]
+    for m in macro_mzas:
+        cnt = mza_info[m]['cant']
+        k = int(math.ceil(cnt / TARGET_CAPACITY))
+        sub_rutas = list(range(route_seq, route_seq + k))
+        mza_to_subdiv[m] = {'num_subrutas': k, 'rutas': sub_rutas}
+        mza_to_route[m] = sub_rutas[0]
+        for sub_r in sub_rutas:
+            rutas.append({
+                'nueva_ruta_lectura': sub_r,
+                'grupo_lectura': g_str,
+                'cant_suministros': int(cnt / k),
+                'manzanas': [m],
+                'calles_compartidas': [],
+                'tipo': 'MACRO_MANZANA'
+            })
+        route_seq += k
+        unassigned.remove(m)
 
-    for _, row in mza_stats.iterrows():
-        mza_id = row['mza_13dig']
-        cnt = row['cant_suministros']
+    while unassigned:
+        seed = min(unassigned, key=lambda m: (mza_info[m]['lat'], mza_info[m]['lon']))
+        unassigned.remove(seed)
 
-        # Caso A: Macro-manzana individual (> 200 suministros)
-        if cnt > MAX_CAPACITY:
-            if current_sumi_count > 0:
-                rutas_asignadas.append({
-                    'nueva_ruta_lectura': current_route_id,
-                    'grupo_lectura': g_str,
-                    'cant_suministros': current_sumi_count,
-                    'manzanas': current_mzas.copy()
-                })
-                for m in current_mzas:
-                    mza_to_route[m] = current_route_id
-                current_route_id += 1
-                current_sumi_count = 0
-                current_mzas = []
+        current_mzas = [seed]
+        current_cant = mza_info[seed]['cant']
+        current_streets = set(mza_info[seed]['calles'])
+        centroid_lat = mza_info[seed]['lat']
+        centroid_lon = mza_info[seed]['lon']
 
-            # Subdividir macro-manzana internamente
-            num_subrutas = int(np.ceil(cnt / TARGET_CAPACITY))
-            mza_to_subdiv[mza_id] = {
-                'num_subrutas': num_subrutas,
-                'rutas': list(range(current_route_id, current_route_id + num_subrutas))
-            }
-            for sub_r in range(current_route_id, current_route_id + num_subrutas):
-                rutas_asignadas.append({
-                    'nueva_ruta_lectura': sub_r,
-                    'grupo_lectura': g_str,
-                    'cant_suministros': int(cnt / num_subrutas),
-                    'manzanas': [mza_id]
-                })
-            current_route_id += num_subrutas
-            continue
+        while current_cant < TARGET_CAPACITY:
+            if not unassigned:
+                break
 
-        # Caso B: Manzana normal
-        if current_sumi_count + cnt <= MAX_CAPACITY:
-            current_mzas.append(mza_id)
-            current_sumi_count += cnt
-            if current_sumi_count >= MIN_CAPACITY:
-                rutas_asignadas.append({
-                    'nueva_ruta_lectura': current_route_id,
-                    'grupo_lectura': g_str,
-                    'cant_suministros': current_sumi_count,
-                    'manzanas': current_mzas.copy()
-                })
-                for m in current_mzas:
-                    mza_to_route[m] = current_route_id
-                current_route_id += 1
-                current_sumi_count = 0
-                current_mzas = []
-        else:
-            if current_sumi_count >= 120:
-                rutas_asignadas.append({
-                    'nueva_ruta_lectura': current_route_id,
-                    'grupo_lectura': g_str,
-                    'cant_suministros': current_sumi_count,
-                    'manzanas': current_mzas.copy()
-                })
-                for m in current_mzas:
-                    mza_to_route[m] = current_route_id
-                current_route_id += 1
-                current_mzas = [mza_id]
-                current_sumi_count = cnt
-            else:
-                current_mzas.append(mza_id)
-                current_sumi_count += cnt
-                rutas_asignadas.append({
-                    'nueva_ruta_lectura': current_route_id,
-                    'grupo_lectura': g_str,
-                    'cant_suministros': current_sumi_count,
-                    'manzanas': current_mzas.copy()
-                })
-                for m in current_mzas:
-                    mza_to_route[m] = current_route_id
-                current_route_id += 1
-                current_sumi_count = 0
-                current_mzas = []
+            best_cand = None
+            best_score = -1e9
 
-    if current_sumi_count > 0:
-        rutas_asignadas.append({
-            'nueva_ruta_lectura': current_route_id,
+            nearby_cands = []
+            for c in unassigned:
+                d = dist_m(mza_info[c]['lat'], mza_info[c]['lon'], centroid_lat, centroid_lon)
+                if d < 1200:
+                    nearby_cands.append((c, d))
+
+            if not nearby_cands:
+                c_near = min(unassigned, key=lambda c: dist_m(mza_info[c]['lat'], mza_info[c]['lon'], centroid_lat, centroid_lon))
+                d_near = dist_m(mza_info[c_near]['lat'], mza_info[c_near]['lon'], centroid_lat, centroid_lon)
+                nearby_cands.append((c_near, d_near))
+
+            for c, d in nearby_cands:
+                cand_cnt = mza_info[c]['cant']
+                if current_cant + cand_cnt > MAX_CAPACITY and current_cant >= MIN_CAPACITY:
+                    continue
+
+                shared_st = len(mza_info[c]['calles'].intersection(current_streets))
+                is_touching = (shared_st > 0 and d <= 600) or (d <= 200)
+
+                if is_touching:
+                    score = 50000 + (shared_st * 10000) - d
+                else:
+                    score = -d
+
+                if score > best_score:
+                    best_score = score
+                    best_cand = c
+
+            if best_cand is None:
+                break
+
+            if best_score < 0 and current_cant >= 120:
+                break
+
+            unassigned.remove(best_cand)
+            current_mzas.append(best_cand)
+            current_cant += mza_info[best_cand]['cant']
+            current_streets.update(mza_info[best_cand]['calles'])
+            centroid_lat = np.mean([mza_info[m]['lat'] for m in current_mzas])
+            centroid_lon = np.mean([mza_info[m]['lon'] for m in current_mzas])
+
+            if current_cant >= TARGET_CAPACITY:
+                break
+
+        st_counts = defaultdict(int)
+        for m in current_mzas:
+            for st in mza_info[m]['calles']:
+                st_counts[st] += 1
+        shared_internal = [st for st, c in st_counts.items() if c >= 2]
+
+        rutas.append({
+            'nueva_ruta_lectura': route_seq,
             'grupo_lectura': g_str,
-            'cant_suministros': current_sumi_count,
-            'manzanas': current_mzas.copy()
+            'cant_suministros': current_cant,
+            'manzanas': current_mzas,
+            'calles_compartidas': shared_internal,
+            'tipo': 'CONEXA' if len(current_mzas) > 1 else 'INDIVIDUAL'
         })
         for m in current_mzas:
-            mza_to_route[m] = current_route_id
+            mza_to_route[m] = route_seq
+        route_seq += 1
 
-    # 4. Mapear a nivel de cada suministro
-    df['nueva_ruta_lectura'] = df['mza_13dig'].map(mza_to_route)
+    df['nueva_ruta_lectura'] = df['mza_id'].map(mza_to_route)
 
-    # Resolver macro-manzanas
     for mza, sub_info in mza_to_subdiv.items():
         sub_rutas = sub_info['rutas']
         k = len(sub_rutas)
-        mza_mask = (df['mza_13dig'] == mza)
-        sub_indices = df[mza_mask].sort_values(by=['parc', 'altura', 'suministro']).index
-        chunk_size = int(np.ceil(len(sub_indices) / k))
-        for i, r_id in enumerate(sub_rutas):
-            part_idx = sub_indices[i * chunk_size : min((i + 1) * chunk_size, len(sub_indices))]
-            df.loc[part_idx, 'nueva_ruta_lectura'] = r_id
+        idx_mza = df[df['mza_id'] == mza].index
+        mza_sub_assign = [sub_rutas[i % k] for i in range(len(idx_mza))]
+        df.loc[idx_mza, 'nueva_ruta_lectura'] = mza_sub_assign
 
-    df['nueva_ruta_lectura'] = df['nueva_ruta_lectura'].fillna(g_num * 1000 + 999).astype(int)
+    df['nueva_ruta_lectura'] = df['nueva_ruta_lectura'].fillna(route_seq).astype(int)
 
-    # Orden correlativo de lectura por ruta
-    df = df.sort_values(by=['nueva_ruta_lectura', 'mza_13dig', 'parc', 'calle', 'altura', 'suministro']).reset_index(drop=True)
-    df['nuevo_orden_lectura'] = df.groupby('nueva_ruta_lectura').cumcount() + 1
+    route_shared_dict = {r['nueva_ruta_lectura']: ', '.join(r['calles_compartidas']) for r in rutas}
+    route_shared_count_dict = {r['nueva_ruta_lectura']: len(r['calles_compartidas']) for r in rutas}
+    route_tipo_dict = {r['nueva_ruta_lectura']: r['tipo'] for r in rutas}
 
-    # Métricas y Resumen de Rutas de este grupo
-    resumen_rutas_g = df.groupby('nueva_ruta_lectura').agg(
-        grupo_lectura=('grupo_lectura', 'first'),
-        cant_suministros=('suministro', 'count'),
-        cant_manzanas=('mza_13dig', 'nunique'),
-        barrios=('barrio', lambda x: ", ".join([str(b) for b in x.dropna().unique()[:3]])),
-        localidad=('localidad', lambda x: x.mode().iloc[0] if not x.mode().empty else 'S/D'),
-        circunscripciones=('circ', lambda x: ", ".join(x.unique())),
-        secciones=('secc', lambda x: ", ".join(x.unique())),
-        lat_centroide=('latitud', 'mean'),
-        lon_centroide=('longitud', 'mean'),
-        rutas_anteriores_involucradas=('ruta_actual', lambda x: len(x.unique()))
-    ).reset_index()
+    df['geo_centroide_lat'] = df['mza_id'].map(lambda m: round(mza_info[m]['lat'], 4) if m in mza_info else round(global_lat_mean, 4))
+    df['geo_centroide_lon'] = df['mza_id'].map(lambda m: round(mza_info[m]['lon'], 4) if m in mza_info else round(global_lon_mean, 4))
+    df['geo_quad'] = 'Q' + (df['geo_centroide_lat'].abs() * 100).astype(int).astype(str) + (df['geo_centroide_lon'].abs() * 100).astype(int).astype(str)
 
-    all_routes_summary.append(resumen_rutas_g)
+    df['calles_perimetrales_mza'] = df['mza_id'].map(lambda m: ', '.join(sorted(mza_info[m]['calles'])) if m in mza_info else '')
+    df['cant_calles_perimetro'] = df['mza_id'].map(lambda m: len(mza_info[m]['calles']) if m in mza_info else 0)
+    df['calles_compartidas_en_ruta'] = df['nueva_ruta_lectura'].map(route_shared_dict)
+    df['cant_calles_compartidas'] = df['nueva_ruta_lectura'].map(route_shared_count_dict)
+    df['tipo_contiguidad'] = df['nueva_ruta_lectura'].map(route_tipo_dict)
 
-    # Guardar campos clave de los suministros
-    cols_keep = [
-        'suministro', 'distrito', 'grupo_lectura', 'id_suministro_catastral',
-        'dc_clean', 'mza_wfs', 'parc', 'calle', 'altura', 'barrio', 'localidad',
-        'latitud', 'longitud', 'ruta_actual', 'orden_actual',
-        'nueva_ruta_lectura', 'nuevo_orden_lectura'
-    ]
-    all_supplies_records.append(df[cols_keep])
+    df['id_suministro_catastral_geo'] = '1-' + g_str + '-' + df['mza_wfs'] + '-' + df['parc'] + '-' + df['geo_quad']
 
-    # Estadísticas consolidadas del grupo
-    n_rutas_nuevas = len(resumen_rutas_g)
-    media_sumi = resumen_rutas_g['cant_suministros'].mean()
-    mediana_sumi = resumen_rutas_g['cant_suministros'].median()
-    en_tolerancia = resumen_rutas_g['cant_suministros'].between(MIN_CAPACITY, MAX_CAPACITY).sum()
-    pct_tolerancia = (en_tolerancia / n_rutas_nuevas * 100) if n_rutas_nuevas > 0 else 0
+    df = df.sort_values(by=['nueva_ruta_lectura', 'mza_wfs', 'calle', 'altura', 'parc']).reset_index(drop=True)
+    df['orden_lectura_sugerido'] = df.groupby('nueva_ruta_lectura').cumcount() + 1
 
-    t_end = time.time()
-    print(f"[+] Grupo {g_str:>2}: {n_sumi:>6} sumi | {n_rutas_ant:>3} rutas ant -> {n_rutas_nuevas:>3} rutas nuevas | Media: {media_sumi:5.1f} | Tol [{MIN_CAPACITY}-{MAX_CAPACITY}]: {pct_tolerancia:5.1f}% | Tiempo: {t_end-t_start:.1f}s")
+    df_rutas_grp = pd.DataFrame(rutas)
+    multi_mza = df_rutas_grp[df_rutas_grp['manzanas'].apply(len) > 1]
+    shared_mean = multi_mza['calles_compartidas'].apply(len).mean() if not multi_mza.empty else 0.0
+
+    t_elapsed = time.time() - t_start
+    n_rutas_nuevas = len(rutas)
+    media_sumi = df_rutas_grp['cant_suministros'].mean()
+    mediana_sumi = df_rutas_grp['cant_suministros'].median()
+    pct_range = ((df_rutas_grp['cant_suministros'] >= MIN_CAPACITY) & (df_rutas_grp['cant_suministros'] <= MAX_CAPACITY)).mean() * 100
+
+    print('[+] Grupo', g_str, 'procesado en', round(t_elapsed, 1), 's | Suministros:', n_sumi, '| Rutas:', n_rutas_ant, '->', n_rutas_nuevas, '| Media:', round(media_sumi, 1), '| Rango:', round(pct_range, 1), '% | Calles comp:', round(shared_mean, 2))
 
     all_groups_summary.append({
-        'grupo_lectura': g_num,
-        'cant_suministros': n_sumi,
-        'cant_manzanas_unicas': len(mza_stats),
+        'grupo_lectura': g_str,
+        'suministros_totales': n_sumi,
         'rutas_anteriores': n_rutas_ant,
         'rutas_nuevas': n_rutas_nuevas,
-        'promedio_sumi_anterior': round(n_sumi / n_rutas_ant, 1),
-        'promedio_sumi_nuevo': round(media_sumi, 1),
-        'mediana_sumi_nuevo': int(mediana_sumi),
-        'rutas_en_tolerancia': en_tolerancia,
-        'pct_en_tolerancia': round(pct_tolerancia, 1)
+        'media_suministros_ruta': round(media_sumi, 1),
+        'mediana_suministros_ruta': round(mediana_sumi, 1),
+        'pct_en_rango_160_200': round(pct_range, 1),
+        'calles_compartidas_promedio': round(shared_mean, 2),
+        'tiempo_segundos': round(t_elapsed, 1)
     })
 
+    for r in rutas:
+        all_routes_summary.append({
+            'nueva_ruta_lectura': r['nueva_ruta_lectura'],
+            'grupo_lectura': r['grupo_lectura'],
+            'cant_suministros': r['cant_suministros'],
+            'cant_manzanas': len(r['manzanas']),
+            'cant_calles_compartidas': len(r['calles_compartidas']),
+            'tipo_contiguidad': r['tipo'],
+            'manzanas': ', '.join(r['manzanas']),
+            'calles_compartidas': ', '.join(r['calles_compartidas'])
+        })
+
+    all_supplies_records.append(df[[
+        'suministro', 'distrito', 'grupo_lectura', 'nueva_ruta_lectura', 'orden_lectura_sugerido',
+        'ruta_actual', 'orden_actual', 'calle', 'altura', 'barrio', 'localidad',
+        'latitud', 'longitud', 'dc', 'mza_wfs', 'id_suministro_catastral_geo',
+        'geo_centroide_lat', 'geo_centroide_lon', 'geo_quad',
+        'cant_calles_perimetro', 'calles_perimetrales_mza',
+        'cant_calles_compartidas', 'calles_compartidas_en_ruta', 'tipo_contiguidad'
+    ]])
+
 conn.close()
-
-# 5. Consolidación Global
-print("\n" + "=" * 110)
-print("📊 CONSOLIDANDO ENTREGABLES GLOBALES DE DISTRITO 1...")
-print("=" * 110)
-
-df_all_routes = pd.concat(all_routes_summary, ignore_index=True)
-df_all_groups = pd.DataFrame(all_groups_summary).sort_values(by='grupo_lectura').reset_index(drop=True)
-df_all_supplies = pd.concat(all_supplies_records, ignore_index=True)
-
-descargas = os.path.expanduser(r"~\Downloads")
-
-# Archivo 1: Resumen de Grupos (Comparativo Antes vs Despues)
-f_grupos = os.path.join(descargas, "resumen_comparativo_grupos_distrito1.csv")
-df_all_groups.to_csv(f_grupos, index=False, encoding="utf-8-sig")
-print(f"[+] Archivo 1 exportado: {f_grupos}")
-
-# Archivo 2: Matriz Resumen de Todas las Nuevas Rutas de Distrito 1 (~3,500 rutas)
-f_rutas = os.path.join(descargas, "resumen_todas_rutas_nuevas_distrito1.csv")
-df_all_routes.to_csv(f_rutas, index=False, encoding="utf-8-sig")
-print(f"[+] Archivo 2 exportado: {f_rutas}")
-
-# Archivo 3: Padrón Completo Consolidado de Suministros Distrito 1
-f_padron = os.path.join(descargas, "padron_nuevas_rutas_distrito1_completo.csv")
-df_all_supplies.to_csv(f_padron, index=False, encoding="utf-8-sig")
-print(f"[+] Archivo 3 exportado: {f_padron}")
-
 total_time = time.time() - total_t0
-print("\n" + "=" * 110)
-print("🎯 RESUMEN FINAL DEL ESCALAMIENTO AL DISTRITO 1:")
-print("=" * 110)
-print(f"Total Suministros Procesados: {len(df_all_supplies):,}")
-print(f"Total Nuevas Rutas Creadas:   {len(df_all_routes):,}")
-print(f"Rutas Anteriores Reemplazadas: {df_all_groups['rutas_anteriores'].sum():,}")
-print(f"Promedio Global Suministros/Ruta: {df_all_routes['cant_suministros'].mean():.1f}")
-print(f"Cumplimiento en Rango [160, 200]: {df_all_routes['cant_suministros'].between(MIN_CAPACITY, MAX_CAPACITY).sum() / len(df_all_routes) * 100:.1f}%")
-print(f"Tiempo Total de Ejecución: {total_time:.1f} segundos ({total_time/60:.2f} min)")
-print("=" * 110)
+print('\n[+] Escalamiento de 20 grupos finalizado en', round(total_time/60, 2), 'minutos.')
 
-print("\nTabla Comparativa por Grupo de Lectura:")
-print(df_all_groups.to_string(index=False))
+df_all_supplies = pd.concat(all_supplies_records, ignore_index=True)
+df_all_routes = pd.DataFrame(all_routes_summary)
+df_all_groups = pd.DataFrame(all_groups_summary)
+
+descargas = os.path.expanduser(r'~\Downloads')
+repo_summary = 'D:/Proyectos/sigec-ruta-nueva-catastro-georef/data/summary'
+os.makedirs(repo_summary, exist_ok=True)
+
+padron_csv_path = os.path.join(descargas, 'padron_nuevas_rutas_distrito1_completo.csv')
+print('[*] Guardando padron completo en CSV:', padron_csv_path, '...')
+df_all_supplies.to_csv(padron_csv_path, index=False, encoding='utf-8-sig')
+
+padron_parquet_path = os.path.join(repo_summary, 'padron_nuevas_rutas_distrito1_completo.parquet')
+print('[*] Guardando padron en Parquet:', padron_parquet_path, '...')
+df_all_supplies.to_parquet(padron_parquet_path, index=False)
+
+routes_csv_path = os.path.join(repo_summary, 'resumen_todas_rutas_nuevas_distrito1.csv')
+df_all_routes.to_csv(routes_csv_path, index=False, encoding='utf-8-sig')
+df_all_routes.to_csv(os.path.join(descargas, 'resumen_todas_rutas_nuevas_distrito1.csv'), index=False, encoding='utf-8-sig')
+
+groups_csv_path = os.path.join(repo_summary, 'resumen_comparativo_grupos_distrito1.csv')
+df_all_groups.to_csv(groups_csv_path, index=False, encoding='utf-8-sig')
+df_all_groups.to_csv(os.path.join(descargas, 'resumen_comparativo_grupos_distrito1.csv'), index=False, encoding='utf-8-sig')
+
+print('=' * 110)
+print('ESCALAMIENTO COMPLETADO EXITOSAMENTE')
+print('Total suministros:', len(df_all_supplies))
+print('Total rutas nuevas:', len(df_all_routes))
+print('Media global:', round(df_all_routes['cant_suministros'].mean(), 1), 'suministros/ruta')
+multi_total = df_all_routes[df_all_routes['cant_manzanas'] > 1]
+print('Promedio global calles compartidas (multi-mza):', round(multi_total['cant_calles_compartidas'].mean(), 2), 'calles/ruta')
+print('=' * 110)
