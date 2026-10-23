@@ -45,7 +45,11 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Capas Base
   const baseLayers = {
-    "CartoDB Oscuro (Recomendado)": L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    "OpenStreetMap (Predeterminado)": L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors'
+    }),
+    "CartoDB Oscuro": L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap &copy; CARTO'
     }),
@@ -53,17 +57,13 @@ document.addEventListener('DOMContentLoaded', () => {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap &copy; CARTO'
     }),
-    "OpenStreetMap": L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap contributors'
-    }),
     "Satélite (ESRI)": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
       maxZoom: 19,
       attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
     })
   };
   
-  baseLayers["CartoDB Oscuro (Recomendado)"].addTo(map);
+  baseLayers["OpenStreetMap (Predeterminado)"].addTo(map);
   L.control.layers(baseLayers, null, { position: 'bottomright' }).addTo(map);
   
   // Capa para destacar la manzana seleccionada
@@ -150,8 +150,8 @@ document.addEventListener('DOMContentLoaded', () => {
       renderer: canvasRenderer,
       fillColor: color,
       fillOpacity: isIsolated ? 0.85 : 0.68,
-      color: isIsolated ? '#ffffff' : color,
-      weight: isIsolated ? 1.5 : 0.8
+      color: isIsolated ? '#0f172a' : '#334155',
+      weight: isIsolated ? 2.2 : 1.0
     };
   }
 
