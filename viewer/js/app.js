@@ -43,7 +43,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let activeIsolatedRoute = null;
   let activeCycleFilter = 'all';
   let currentColorMode = 'route'; // 'route', 'cycle', 'density'
-  
+  let lastFeatureClickTime = 0;
+
   // 1. Inicializar Mapa Leaflet con soporte de zoom
   const map = L.map('map', {
     center: [-31.4201, -64.1888], // Córdoba Capital Centro
@@ -85,8 +86,9 @@ document.addEventListener('DOMContentLoaded', () => {
   baseLayers["OpenStreetMap (Voyager - Predeterminado)"].addTo(map);
   L.control.layers(baseLayers, null, { position: 'bottomright' }).addTo(map);
   
-  // Capa para destacar la manzana seleccionada
+  // Capa para destacar la manzana seleccionada (interactive: false para no capturar clics)
   const highlightLayer = L.geoJSON(null, {
+    interactive: false,
     style: {
       color: '#0284c7',
       weight: 3.5,
@@ -142,25 +144,27 @@ document.addEventListener('DOMContentLoaded', () => {
     const isIsolated = (activeIsolatedRoute !== null);
     const matchesIsolated = (props.r === activeIsolatedRoute);
     
-    // Si hay una ruta aislada, atenuar fuertemente las demás
+    // Si hay una ruta aislada, atenuar fuertemente las demás pero mantenerlas clickeables si se desea
     if (isIsolated && !matchesIsolated) {
       return {
         renderer: canvasRenderer,
         fillColor: '#94a3b8',
         fillOpacity: 0.05,
         color: '#cbd5e1',
-        weight: 0.3
+        weight: 0.3,
+        interactive: true
       };
     }
     
-    // Filtro por ciclo
+    // Filtro por ciclo: deshabilitar interacción para que no capturen clics transparentes
     if (activeCycleFilter !== 'all' && props.g !== activeCycleFilter) {
       return {
         renderer: canvasRenderer,
         fillColor: 'transparent',
         fillOpacity: 0,
         color: 'transparent',
-        weight: 0
+        weight: 0,
+        interactive: false
       };
     }
     
@@ -170,7 +174,8 @@ document.addEventListener('DOMContentLoaded', () => {
       fillColor: color,
       fillOpacity: isIsolated ? 0.88 : 0.68,
       color: isIsolated ? '#0f172a' : '#334155',
-      weight: isIsolated ? 2.2 : 1.0
+      weight: isIsolated ? 2.2 : 1.0,
+      interactive: true
     };
   }
 
@@ -214,22 +219,30 @@ document.addEventListener('DOMContentLoaded', () => {
       renderer: canvasRenderer,
       style: styleFeature,
       onEachFeature: (feature, layer) => {
+        const p = feature.properties;
+        
+        // Vincular tooltip UNA SOLA VEZ de forma estática
+        layer.bindTooltip(`
+          <div style="font-weight:700; color:#38bdf8; margin-bottom:2px;">Ruta ${p.r} (Ciclo ${p.g})</div>
+          <div style="font-size:0.75rem; color:#e2e8f0;">Mza: ${p.m}</div>
+          <div style="font-size:0.75rem; color:#94a3b8;">${p.s} suministros</div>
+        `, {
+          className: 'custom-tooltip',
+          sticky: true,
+          direction: 'top'
+        });
+
         layer.on({
           click: (e) => {
             L.DomEvent.stopPropagation(e);
+            lastFeatureClickTime = Date.now();
             selectFeature(feature);
           },
-          mouseover: (e) => {
-            const p = feature.properties;
-            layer.bindTooltip(`
-              <div style="font-weight:700; color:#38bdf8; margin-bottom:2px;">Ruta ${p.r} (Ciclo ${p.g})</div>
-              <div style="font-size:0.75rem; color:#e2e8f0;">Mza: ${p.m}</div>
-              <div style="font-size:0.75rem; color:#94a3b8;">${p.s} suministros</div>
-            `, {
-              className: 'custom-tooltip',
-              sticky: true,
-              direction: 'top'
-            }).openTooltip();
+          mouseover: () => {
+            map.getContainer().style.cursor = 'pointer';
+          },
+          mouseout: () => {
+            map.getContainer().style.cursor = '';
           }
         });
       }
@@ -302,6 +315,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (filterStatusBadge) {
       filterStatusBadge.classList.add('hidden');
     }
+    
+    map.getContainer().style.cursor = '';
     
     if (geojsonLayer) {
       geojsonLayer.setStyle(styleFeature);
@@ -430,10 +445,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Clic en área vacía del mapa deselecciona la manzana
   map.on('click', () => {
+    // Si se hizo clic sobre una manzana hace menos de 250ms, IGNORAR para que no cierre la selección
+    if (Date.now() - lastFeatureClickTime < 250) {
+      return;
+    }
     if (currentSelectedFeature && activeIsolatedRoute === null) {
       currentSelectedFeature = null;
       highlightLayer.clearLayers();
       if (inspectorPanel) inspectorPanel.classList.remove('open');
+      map.getContainer().style.cursor = '';
     }
   });
 

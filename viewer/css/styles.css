@@ -587,8 +587,13 @@ html, body {
   border-radius: 3px;
 }
 
-/* Tooltip Card */
+/* Tooltip Card (Transparent to Clicks) */
+.leaflet-tooltip {
+  pointer-events: none !important;
+}
+
 .leaflet-tooltip.custom-tooltip {
+  pointer-events: none !important;
   background: rgba(15, 23, 42, 0.94);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
